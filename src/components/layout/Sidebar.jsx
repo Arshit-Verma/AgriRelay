@@ -1,9 +1,9 @@
-import React,{useMemo} from "react";
+import React from "react";
 import { useAuth } from '../../context/AuthContext';
 import { useZone } from '../../context/ZoneContext';
-import { Link, NavLink, useLocation } from 'react-router-dom';
-import { BadgeIndianRupee, ClipboardCheck, Flag, Home, Landmark, Map, MessageSquareText, Wheat, Sprout, AlertTriangle, FileText} from 'lucide-react';
-import { LayoutDashboard} from "lucide-react";
+import { NavLink } from 'react-router-dom';
+import { AlertTriangle, FileText, Flag, LayoutDashboard, Map, MessageSquareText, Sprout } from 'lucide-react';
+
 const desktopNavItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/mandi-map', label: 'Mandi Map', icon: Map },
@@ -30,18 +30,9 @@ function initialsFromName(name) {
 
 export default function Sidebar() {
   const { officer, logout } = useAuth();
-  const { activeZone, selectZone, contaminationFlags = [] } = useZone();
-  const location = useLocation();
-
-
-  const { hasUnflaggedAlerts } = useMemo(() => {
-    const hasUnflagged = contaminationFlags.some((f) => f.severity === 'high');
-    return { hasUnflaggedAlerts: hasUnflagged };
-  }, []);
+  const { zone, hasHighSeverityFlag } = useZone();
 
   const zoneInitials = initialsFromName(officer?.name);
-
-
 
   return (
     <>
@@ -61,14 +52,14 @@ export default function Sidebar() {
           <div className="mt-6">
             <p className="text-sm font-semibold text-muted">{officer?.name ?? '—'}</p>
             <div className="mt-2 inline-flex items-center rounded-control bg-accent/20 px-3 py-1 text-xs font-bold text-[#8A4F16]">
-              {activeZone ?? 'Zone'}
+              {zone ?? 'Zone'}
             </div>
           </div>
         </div>
 
         <nav className="mt-8 space-y-1">
           {desktopNavItems.map(({ to, label, icon: Icon, dot }) => {
-            const showRedDot = dot === 'high' && hasUnflaggedAlerts;
+            const showRedDot = dot === 'high' && hasHighSeverityFlag;
             return (
               <NavLink
                 key={to}
@@ -119,7 +110,7 @@ export default function Sidebar() {
       {/* Mobile bottom navigation (no hamburger) */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 flex h-16 items-center justify-around gap-1 border-t border-black/10 bg-surface lg:hidden">
         {mobileNavItems.map(({ to, label, icon: Icon, dot }) => {
-          const showRedDot = dot === 'high' && hasUnflaggedAlerts;
+          const showRedDot = dot === 'high' && hasHighSeverityFlag;
 
           return (
 

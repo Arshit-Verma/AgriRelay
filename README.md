@@ -1,276 +1,217 @@
 # AgriRelay
-Field Intelligence Platform for Agricultural Extension Officers
 
-
-## Architecture:
-<img width="2720" height="2320" alt="agrirelay_system_architecture" src="https://github.com/user-attachments/assets/0e8ef03b-a63e-4fb4-acc3-70a135c548c6" />
-
-# AgriRelay 🌾
-### Field Intelligence Platform for Agricultural Extension Officers
+Field intelligence platform for agricultural extension officers.
 
 > *Where seeds meet satellites — through the people in between.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Built at ArcNight 2026](https://img.shields.io/badge/Built%20at-ArcNight%202026-purple)](https://arcnight.in)
-[![Domain: Agritech](https://img.shields.io/badge/Domain-Agritech-brightgreen)]()
-[![Status: Hackathon MVP](https://img.shields.io/badge/Status-Hackathon%20MVP-orange)]()
+**Status:** hackathon MVP, built at ArcNight 2026 (Agritech domain, hosted by Microsoft Innovations Club). The prices and farmers in the demo are sample data.
 
----
+## The problem
 
-## The Problem
+Every harvest season, farmers in the same district harvest at the same time. Local mandis flood, prices crash, and perishables are sold at throwaway rates. A farmer selling tomatoes at ₹3/kg often has no idea the same produce is fetching ₹14/kg 80 km away.
 
-India has 140 million farming households. Every harvest season, farmers in the same district harvest at the same time — flooding local mandis, crashing prices, and selling perishables at throwaway rates to middlemen. A farmer selling tomatoes at ₹3/kg has no idea the same produce is fetching ₹14/kg 80km away.
+Weather apps, disease detectors and price dashboards were built for a farmer with a smartphone and WiFi. That farmer doesn't represent most of rural India.
 
-Existing solutions — weather apps, crop disease detectors, price dashboards — were built for a smartphone-carrying, WiFi-connected farmer. That farmer doesn't represent most of rural India.
+## The insight
 
-**The gap isn't technology. It's the last mile.**
+India has about 1.2 lakh Agricultural Extension Officers. They are technically trained, government-posted and already trusted by farmers. AgriRelay gives them a command center, and they relay the advice to farmers by SMS, with no smartphone needed on the farmer's end.
 
----
+## What works today
 
-## Our Insight
-
-There are **1.2 lakh Agricultural Extension Officers** across India — BSc Agriculture graduates, government-posted, technically literate, and already trusted by farming communities. They visit fields, relay government schemes, and advise on crop health.
-
-They had no tools.
-
-AgriRelay gives them a command center.
-
----
-
-## What AgriRelay Does
-
-AgriRelay is a field intelligence platform for Agricultural Extension Officers. It aggregates market pricing, sowing trends, and supply chain data to give officers AI-grade recommendations they can act on immediately — and relay to farmers via SMS, no smartphone required.
-
-| Feature | Description |
+| Feature | Status |
 |---|---|
-| **Demand Forecast Engine** | Predicts supply-demand imbalances across mandis 2–3 weeks ahead using historical pricing and regional sowing data |
-| **Harvest Timing Advisor** | Recommends optimal harvest windows per crop per zone to align with peak market demand — not just peak ripeness |
-| **Smart Mandi Router** | Identifies the highest-value mandi within a configurable radius based on live supply/demand imbalance |
-| **One-Click SMS Relay** | Officer sends pre-formatted vernacular SMS alerts to registered farmers — works on feature phones, zero data needed |
-| **Contamination Audit Trail** | Officers geo-tag infected produce batches before they enter the supply chain; generates a live Supply Chain Trust Score per mandi zone |
-| **Offline-First PWA** | Dashboard works without internet; syncs data when connectivity is restored |
-| **Govt Scheme Feed** | Auto-pulls relevant advisories from agricultural department portals for the officer's zone |
+| Officer sign-in with hashed passwords and login tokens | Working |
+| Zone-specific dashboard for four Karnataka zones | Working |
+| Price forecast for the next 3 weeks | Working, on sample price history |
+| Harvest timing advice | Working, on sample crop plans |
+| Best-mandi routing after transport cost | Working |
+| Contamination flags and live Supply Trust Scores | Working |
+| Government scheme list filtered by zone crops | Working, on sample schemes |
+| Offline mode with sync on reconnect | Working |
+| Kannada and English message templates | Working |
+| SMS sending | **Simulated.** Messages are logged, but no SMS is sent |
+| Live mandi prices from data.gov.in | Built, not yet tested against the real service |
+| Real price history feed, weather or satellite inputs to the forecast | Not built |
 
----
+## How the numbers are calculated
 
-## The Unique Layer: Supply Chain Trust Score
+The logic is meant to be simple enough for an officer to question. The settings are at the top of [`backend/forecast.js`](backend/forecast.js) and [`backend/trustScore.js`](backend/trustScore.js).
 
-Every other agritech solution detects disease after the fact. AgriRelay prevents contaminated produce from entering the supply chain undetected.
+- **Price forecast:** a straight trend line through the last 8 weeks, extended 3 weeks. The shaded range covers roughly 80% of likely outcomes, based on how far prices have strayed from the trend.
+- **Harvest timing:** compares the expected price gain from waiting with the crop's spoilage from staying in the field. If waiting gains under 0.5%, it says to harvest at maturity.
+- **Mandi routing:** ranks mandis trading the crop by what the farmer keeps after transport (₹0.5 per quintal per km). It looks within 200 km and skips mandis with a trust score under 40, unless nothing else is available.
+- **Supply Trust Score:** each contamination flag from the last 30 days within 50 km lowers a mandi's score by 3 (low), 8 (medium) or 15 (high).
 
-When an officer flags an infected batch — crop type, GPS location, severity — that data propagates through the system:
+These settings are estimates and should be checked by someone with field experience.
 
-- Mandis receiving supply from flagged zones receive a **depressed Trust Score**
-- Aggregators and FPOs see **which zones have clean supply** and can route procurement accordingly
-- The contamination dataset compounds into a **national produce quality map** that becomes more valuable every season
+## Tech stack
 
-This is the only feature in this problem space that protects both ends of the supply chain simultaneously.
+- **Frontend:** React 18, Vite, Tailwind CSS, Leaflet, Recharts, vite-plugin-pwa
+- **Backend:** Node.js, Express, PostgreSQL (Supabase or any Postgres), bcryptjs, jsonwebtoken
+- **Testing:** Node's built-in test runner
 
----
-
-## System Architecture
+## Project structure
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      DATA SOURCES                           │
-│  AgMarkNet/eNAM APIs  │  Satellite NDVI  │  Weather APIs   │
-└────────────┬──────────┴────────┬─────────┴────────┬────────┘
-             │                  │                   │
-             ▼                  ▼                   ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   AI PREDICTION ENGINE                      │
-│    Demand Forecasting  │  Harvest Timing  │  Mandi Routing  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│             EXTENSION OFFICER DASHBOARD (PWA)               │
-│  Zone Map  │  Recommendations  │  SMS Compose  │  Flag Tool │
-└───────┬────────────────────────────────┬────────────────────┘
-        │                                │
-        ▼                                ▼
-┌───────────────┐                ┌───────────────────────┐
-│  SMS Gateway  │                │   Govt Scheme Portal  │
-│ (Twilio/MSG91)│                │   Contamination Log   │
-└───────┬───────┘                └───────────────────────┘
-        │
-        ▼
-┌───────────────┐
-│    FARMER     │
-│  Feature phone│
-│  No data req. │
-└───────────────┘
+AgriRelay/
+├── database.sql          Tables and demo data
+├── public/               App icons
+├── src/
+│   ├── api/              API client and offline write queue
+│   ├── components/       Layout and shared UI
+│   ├── constants/        Crop colours and SMS templates
+│   ├── context/          Signed-in officer and zone data
+│   ├── hooks/            Data loading and sync status
+│   ├── pages/            The login page and six app screens
+│   └── utils/            Date formatting
+└── backend/
+    ├── server.js         API routes
+    ├── auth.js           Login tokens
+    ├── forecast.js       Forecast, harvest timing and routing
+    ├── trustScore.js     Supply Trust Score
+    ├── queries.js        Database queries
+    ├── db.js             Database connection
+    ├── setup-db.js       Loads database.sql
+    ├── set-password.js   Sets officer passwords
+    └── tests/            Automated tests
 ```
 
----
+## Getting started
 
-## Tech Stack
+You need Node.js 18 or newer and a Postgres database. A free [Supabase](https://supabase.com) project works.
 
-**Frontend**
-- React.js + Tailwind CSS
-- Leaflet.js — interactive zone and mandi maps
-- Recharts — price trend visualizations
-- Workbox / Service Workers — offline-first PWA
-
-**Backend**
-- Python FastAPI
-- PostgreSQL + PostGIS — geospatial zone queries
-- Redis — caching live mandi price feeds
-
-**Data & AI**
-- AgMarkNet / eNAM APIs — live and historical mandi pricing
-- NDVI satellite feeds — regional sowing trend estimation
-- ARIMA / LSTM model — demand forecasting per crop per region
-- Crop calendar dataset — district-wise harvest window baseline
-
-**Infrastructure & Integrations**
-- Twilio / MSG91 — SMS gateway for farmer relay
-- Cloudflare Pages — frontend deployment
-- Railway — backend hosting
-- GitHub Actions — CI/CD
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js ≥ 18
-- Python ≥ 3.10
-- PostgreSQL ≥ 14 with PostGIS extension
-- A Twilio or MSG91 account (for SMS)
-
-### Clone the repo
+**1. Install**
 
 ```bash
-git clone https://github.com/your-org/agrirelay.git
-cd agrirelay
-```
-
-### Frontend setup
-
-```bash
-cd frontend
 npm install
-cp .env.example .env        # fill in your API base URL
+npm --prefix backend install
+```
+
+**2. Configure the backend**
+
+Copy `backend/.env.example` to `backend/.env` and fill in `DATABASE_URL` and `JWT_SECRET`. In Supabase, use the connection string under **Connect → Session pooler**.
+
+**3. Create the tables and demo data**
+
+```bash
+npm --prefix backend run db:setup
+```
+
+This only runs on an empty database. To erase the AgriRelay tables and reload the demo data, run `npm --prefix backend run db:setup -- --reset`.
+
+**4. Give officers a password**
+
+Nobody can sign in until they have one. Run this without an ID to list the officers:
+
+```bash
+npm --prefix backend run officer:password
+```
+
+Then set a password for one of them:
+
+```bash
+npm --prefix backend run officer:password -- officer-004
+```
+
+| Officer ID | Zone |
+|---|---|
+| `officer-004` | Kolar |
+| `officer-005` | Tumkur |
+| `officer-006` | Hassan |
+| `officer-007` | Mandya |
+
+**5. Run the app**
+
+In one terminal, start the backend:
+
+```bash
+npm --prefix backend run dev
+```
+
+In another, start the frontend, then open <http://localhost:5173>:
+
+```bash
 npm run dev
 ```
 
-### Backend setup
+## Offline mode
+
+Offline support only runs in a production build, not under `npm run dev`:
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate    # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env        # fill in DB credentials, API keys
-uvicorn main:app --reload
+npm run build
+npm run preview -- --port 5173
 ```
 
-### Environment variables
+Once an officer has opened a page online, it stays available offline with its last saved data, and the top bar shows how old that data is. Contamination flags and message log entries made offline are kept on the device and sent when the connection returns. Signing out clears the saved data.
 
-**Frontend `.env`**
-```
-VITE_API_BASE_URL=http://localhost:8000
-VITE_MAPBOX_TOKEN=your_mapbox_token
-```
+## Commands
 
-**Backend `.env`**
-```
-DATABASE_URL=postgresql://user:password@localhost:5432/agrirelay
-AGMARKNET_API_KEY=your_key
-TWILIO_ACCOUNT_SID=your_sid
-TWILIO_AUTH_TOKEN=your_token
-TWILIO_FROM_NUMBER=+1xxxxxxxxxx
-SECRET_KEY=your_jwt_secret
-```
+| Command | What it does |
+|---|---|
+| `npm run dev` | Starts the frontend |
+| `npm run build` | Builds the frontend for production |
+| `npm run lint` | Checks the code style |
+| `npm test` | Runs the automated tests |
+| `npm --prefix backend run dev` | Starts the backend and restarts it on changes |
+| `npm --prefix backend run db:setup` | Creates the tables and demo data |
+| `npm --prefix backend run officer:password` | Lists officers or sets a password |
 
-### Database setup
+## Environment variables
 
-```bash
-cd backend
-psql -U postgres -c "CREATE DATABASE agrirelay;"
-psql -U postgres -d agrirelay -c "CREATE EXTENSION postgis;"
-python scripts/migrate.py
-python scripts/seed_demo_data.py   # loads demo zone + mandi data
-```
+**`backend/.env`**
 
----
-
-## Project Structure
-
-```
-agrirelay/
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Map/              # Leaflet zone + mandi map
-│   │   │   ├── Dashboard/        # Officer main dashboard
-│   │   │   ├── SMSCompose/       # Farmer SMS relay panel
-│   │   │   ├── ContaminationFlag/# Batch infection reporting
-│   │   │   └── RecommendationCard/
-│   │   ├── pages/
-│   │   ├── hooks/
-│   │   └── services/             # API client + offline cache
-│   └── public/
-│       └── sw.js                 # Service worker (offline PWA)
-│
-├── backend/
-│   ├── api/
-│   │   ├── routes/
-│   │   │   ├── recommendations.py
-│   │   │   ├── contamination.py
-│   │   │   ├── sms.py
-│   │   │   └── officers.py
-│   │   └── models/
-│   ├── ml/
-│   │   ├── demand_forecast.py    # ARIMA/LSTM price forecasting
-│   │   ├── harvest_timing.py
-│   │   └── mandi_router.py
-│   ├── data/
-│   │   ├── ingest_agmarknet.py
-│   │   └── ingest_ndvi.py
-│   └── scripts/
-│       ├── migrate.py
-│       └── seed_demo_data.py
-│
-└── docs/
-    └── api_reference.md
-```
-
----
-
-## Key API Endpoints
-
-| Method | Endpoint | Description |
+| Variable | Required | Purpose |
 |---|---|---|
-| `GET` | `/api/recommendations/{zone_id}` | Harvest timing + mandi routing recommendations for a zone |
-| `GET` | `/api/mandis/trustscore` | Live trust scores for all mandis in radius |
-| `POST` | `/api/contamination/flag` | Submit a contamination report (crop, GPS, severity) |
-| `POST` | `/api/sms/send` | Trigger SMS relay to farmer group |
-| `GET` | `/api/schemes/{zone_id}` | Active govt schemes relevant to zone's crops |
-| `GET` | `/api/prices/forecast/{crop}/{mandi_id}` | 3-week price forecast for a crop at a mandi |
+| `DATABASE_URL` | Yes | Postgres connection string |
+| `JWT_SECRET` | Yes | Signs login tokens |
+| `OPENWEATHER_API_KEY` | No | Real weather. Without it the top bar shows a placeholder |
+| `OGD_API_KEY` | No | Live mandi prices from data.gov.in |
+| `PORT` | No | Backend port, default 5000 |
+| `CORS_ORIGIN` | No | Frontend address, default `http://localhost:5173` |
 
-Full API reference: [`docs/api_reference.md`](docs/api_reference.md)
+**`.env` in the project root (optional)**
 
----
+| Variable | Purpose |
+|---|---|
+| `VITE_API_BASE_URL` | Backend address, default `http://localhost:5000` |
 
-## Impact
+## API
 
-- **1.2 lakh** extension officers already deployed across India — zero new hiring needed to scale
-- **One officer** serves 500–1,000 farmers — a single deployment reaches hundreds of thousands
-- **₹0 cost to the farmer** — the officer is government-salaried; farmers get the benefit for free
-- **Feature phone compatible** — the SMS relay requires no smartphone, no data plan on the farmer's end
-- **Compounding data** — every contamination flag makes the trust score more accurate; the system improves passively every season
+Everything except sign-in needs an `Authorization: Bearer <token>` header. An officer's zone always comes from their token.
 
----
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/auth/login` | Sign in with `officerId` and `password` |
+| `GET` | `/api/mandis` | All mandis with forecasts and trust scores |
+| `GET` | `/api/farmers` | Farmers in the officer's zone |
+| `GET` | `/api/harvest-recommendations` | Harvest and routing advice for the zone |
+| `GET` | `/api/price-trends?crop=Tomato` | Price history, forecast and past seasons |
+| `GET` | `/api/contamination-flags` | Flags in the zone |
+| `POST` | `/api/contamination-flags` | Save a new flag |
+| `GET` | `/api/govt-schemes` | Schemes for the zone's crops |
+| `POST` | `/api/sms/send` | Record a message in the log. Sends no SMS |
+| `GET` | `/api/sms/logs` | Message history for the zone |
+| `GET` | `/api/weather` | Weather for the zone |
 
-## Built At
+## Troubleshooting
 
-**ArcNight 2026** — Agritech Domain
-Hosted by Microsoft Innovations Club
+**"Connection terminated due to connection timeout"** usually means your network blocks database ports 5432 and 6543, which is common on college and office WiFi. Try a phone hotspot or a VPN.
 
----
+**The backend stops straight away** with a message about `DATABASE_URL` or `JWT_SECRET`. Add the missing value to `backend/.env`.
+
+**"Incorrect Officer ID or password"** can also mean that officer has no password yet. See step 4.
+
+**`npm run dev` shows an old version** after you've tried the production build. The offline service worker is still active for that address. Clear the site's data in your browser's developer tools (Application → Storage → Clear site data).
+
+## Known limitations
+
+- Prices, farmers and schemes are sample data. Forecasts are only as good as the price history behind them.
+- The trend line follows prices only. It can't foresee a sudden supply flood, and it doesn't use weather or sowing data.
+- Each crop has one price history, applied to every mandi trading it.
+- Contamination locations are simulated near the zone centre, because the form doesn't capture GPS yet.
+- Automated tests cover the backend logic. The screens have been tested by hand.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT

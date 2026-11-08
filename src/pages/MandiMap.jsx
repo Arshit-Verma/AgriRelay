@@ -1,44 +1,42 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { X, ArrowRight, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import 'leaflet/dist/leaflet.css';
-
-// PART 1 — COGNIZANT GEOSPATIAL DATA STRUCTURES
-const MANDIS = [
-  { id: 1, name: "Bangalore APMC", lat: 12.9716, lng: 77.5946, crop: "Tomato", currentPrice: 310, predictedPrice: 520, trustScore: 82 },
-  { id: 2, name: "Kolar Mandi", lat: 13.1369, lng: 78.1294, crop: "Tomato", currentPrice: 140, predictedPrice: 160, trustScore: 28 },
-  { id: 3, name: "Tumkur APMC", lat: 13.3379, lng: 77.1010, crop: "Onion", currentPrice: 420, predictedPrice: 490, trustScore: 65 },
-  { id: 4, name: "Hassan Mandi", lat: 13.0072, lng: 76.0962, crop: "Maize", currentPrice: 190, predictedPrice: 240, trustScore: 71 },
-  { id: 5, name: "Mandya APMC", lat: 12.5218, lng: 76.8951, crop: "Tomato", currentPrice: 280, predictedPrice: 320, trustScore: 55 },
-  { id: 6, name: "Chikkaballapur", lat: 13.4355, lng: 77.7315, crop: "Onion", currentPrice: 380, predictedPrice: 410, trustScore: 44 },
-  { id: 7, name: "Ramanagara", lat: 12.7157, lng: 77.2819, crop: "Maize", currentPrice: 210, predictedPrice: 260, trustScore: 78 },
-  { id: 8, name: "Mysuru APMC", lat: 12.2958, lng: 76.6394, crop: "Tomato", currentPrice: 295, predictedPrice: 350, trustScore: 60 }
-];
-
-const CONTAMINATION_FLAGS = [
-  { id: 1, lat: 13.1369, lng: 78.1294, crop: "Onion", batchId: "BATCH-2026-0041", severity: "high" },
-  { id: 2, lat: 13.4355, lng: 77.7315, crop: "Tomato", batchId: "BATCH-2026-0038", severity: "medium" }
-];
+import PageStatus from '../components/ui/PageStatus';
+import { useZone } from '../context/ZoneContext';
+import { useApi } from '../hooks/useApi';
 
 // Inner engine sub-component helper to drive reactive camera moves safely inside MapContainer context
 function MapFlyController({ center, zoom }) {
   const map = useMap();
-  if (center) {
-    map.flyTo(center, zoom, { duration: 1.5 });
-  }
+
+  useEffect(() => {
+    if (center) {
+      map.flyTo(center, zoom, { duration: 1.5 });
+    }
+  }, [map, center, zoom]);
+
   return null;
 }
 
 export default function MandiMap() {
   const navigate = useNavigate();
+  const { center, contaminationFlags } = useZone();
+  const { data: mandis, error } = useApi('/api/mandis');
 
   // State Trackers
   const [cropFilter, setCropFilter] = useState("All");
   const [trustFilter, setTrustFilter] = useState("All");
   const [selectedMandi, setSelectedMandi] = useState(null);
   const [watchlist, setWatchlist] = useState([]);
-  const [mapParams, setMapParams] = useState({ center: [13.1986, 77.7066], zoom: 9 });
+  const [mapParams, setMapParams] = useState({ center, zoom: 9 });
+
+  if (!mandis) {
+    return <PageStatus error={error} />;
+  }
+
+  const cropOptions = ["All", ...new Set(mandis.map((m) => m.crop))];
 
   // Color selection lookup logic block
   const getTrustColor = (score) => {
@@ -48,21 +46,21 @@ export default function MandiMap() {
   };
 
   // Processing filtration layer computations
-  const filteredMandis = MANDIS.filter((m) => {
+  const filteredMandis = mandis.filter((m) => {
     const cropMatch = cropFilter === "All" || m.crop === cropFilter;
     let trustMatch = true;
-    if (trustFilter === "High 75+") trustMatch = m.trustScore >= 75;
-    else if (trustFilter === "Medium") trustMatch = m.trustScore >= 40 && m.trustScore < 75;
-    else if (trustFilter === "Low <40") trustMatch = m.trustScore < 40;
+    if (trustFilter === "High 75+") trustMatch = m.supplyTrustScore >= 75;
+    else if (trustFilter === "Medium") trustMatch = m.supplyTrustScore >= 40 && m.supplyTrustScore < 75;
+    else if (trustFilter === "Low <40") trustMatch = m.supplyTrustScore < 40;
     return cropMatch && trustMatch;
   });
 
   const filteredWatchlist = watchlist.filter((m) => {
     const cropMatch = cropFilter === "All" || m.crop === cropFilter;
     let trustMatch = true;
-    if (trustFilter === "High 75+") trustMatch = m.trustScore >= 75;
-    else if (trustFilter === "Medium") trustMatch = m.trustScore >= 40 && m.trustScore < 75;
-    else if (trustFilter === "Low <40") trustMatch = m.trustScore < 40;
+    if (trustFilter === "High 75+") trustMatch = m.supplyTrustScore >= 75;
+    else if (trustFilter === "Medium") trustMatch = m.supplyTrustScore >= 40 && m.supplyTrustScore < 75;
+    else if (trustFilter === "Low <40") trustMatch = m.supplyTrustScore < 40;
     return cropMatch && trustMatch;
   });
 
@@ -95,7 +93,7 @@ export default function MandiMap() {
       <div className="flex flex-wrap items-center gap-6 bg-white border border-black/10 rounded-xl p-4 mb-4 shadow-sm shrink-0">
         <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
           <span>Filter by crop:</span>
-          {["All", "Tomato", "Onion", "Maize"].map((crop) => (
+          {cropOptions.map((crop) => (
             <button
               key={crop}
               onClick={() => setCropFilter(crop)}
@@ -132,8 +130,8 @@ export default function MandiMap() {
         {/* MAP PANEL CONTAINER SECTOR */}
         <div className="relative rounded-xl overflow-hidden border border-black/10 bg-gray-100 flex-grow" style={{ height: "calc(100vh - 180px)" }}>
           <MapContainer 
-            center={[13.1986, 77.7066]} 
-            zoom={9} 
+            center={center}
+            zoom={9}
             zoomControl={false}
             className="h-full w-full z-10"
           >
@@ -146,7 +144,7 @@ export default function MandiMap() {
                 key={mandi.id}
                 center={[mandi.lat, mandi.lng]}
                 radius={16}
-                fillColor={getTrustColor(mandi.trustScore)}
+                fillColor={getTrustColor(mandi.supplyTrustScore)}
                 fillOpacity={0.9}
                 stroke={true}
                 color="white"
@@ -165,7 +163,7 @@ export default function MandiMap() {
             ))}
 
             {/* CONTAMINATION FLAGS CIRCLEMARKERS */}
-            {CONTAMINATION_FLAGS.map((flag) => (
+            {contaminationFlags.map((flag) => (
               <CircleMarker
                 key={flag.id}
                 center={[flag.lat, flag.lng]}
@@ -205,7 +203,7 @@ export default function MandiMap() {
               <div className="mt-4 grid grid-cols-2 gap-2 border-t border-b border-gray-100 py-3">
                 <div>
                   <p className="text-[13px] font-medium text-gray-400">Current</p>
-                  <p className="text-[16px] font-bold text-[#1B1B1B]"> can ₹{selectedMandi.currentPrice}/q</p>
+                  <p className="text-[16px] font-bold text-[#1B1B1B]">₹{selectedMandi.currentPrice}/q</p>
                 </div>
                 <div>
                   <p className="text-[13px] font-medium text-gray-400">Predicted</p>
@@ -233,18 +231,24 @@ export default function MandiMap() {
               <div className="mt-4">
                 <div className="flex items-center justify-between text-xs font-semibold mb-1">
                   <span className="text-gray-400">Supply Trust</span>
-                  <span style={{ color: getTrustColor(selectedMandi.trustScore) }}>{selectedMandi.trustScore}%</span>
+                  <span style={{ color: getTrustColor(selectedMandi.supplyTrustScore) }}>{selectedMandi.supplyTrustScore}%</span>
                 </div>
                 <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div 
                     className="h-full rounded-full transition-all duration-300" 
                     style={{ 
-                      width: `${selectedMandi.trustScore}%`, 
-                      backgroundColor: getTrustColor(selectedMandi.trustScore) 
+                      width: `${selectedMandi.supplyTrustScore}%`, 
+                      backgroundColor: getTrustColor(selectedMandi.supplyTrustScore) 
                     }} 
                   />
                 </div>
               </div>
+
+              {selectedMandi.nearbyFlagCount > 0 && (
+                <p className="mt-1.5 text-[11px] font-medium text-gray-400">
+                  −{selectedMandi.trustPenalty} from {selectedMandi.nearbyFlagCount} recent flag{selectedMandi.nearbyFlagCount > 1 ? "s" : ""} nearby
+                </p>
+              )}
 
               {/* Interactive payload button coupling action templates layouts mapping container */}
               <div className="mt-5 grid grid-cols-2 gap-3">
@@ -278,7 +282,7 @@ export default function MandiMap() {
             {filteredWatchlist.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center px-2">
                 <p className="text-[14px] font-normal text-[#9CA3AF] leading-normal font-sans">
-                  Tap a marker, then 'Route here' to add mandis to your watchlist.
+                  Tap a marker, then &apos;Route here&apos; to add mandis to your watchlist.
                 </p>
               </div>
             ) : (
@@ -302,9 +306,9 @@ export default function MandiMap() {
                       <span className="text-[11px] font-medium bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">{mandi.crop}</span>
                       <span 
                         className="text-[11px] font-bold px-1.5 py-0.5 rounded text-white"
-                        style={{ backgroundColor: getTrustColor(mandi.trustScore) }}
+                        style={{ backgroundColor: getTrustColor(mandi.supplyTrustScore) }}
                       >
-                        {mandi.trustScore}
+                        {mandi.supplyTrustScore}
                       </span>
                     </div>
 

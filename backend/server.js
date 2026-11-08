@@ -1,18 +1,26 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import axios from 'axios';
+import bcrypt from 'bcryptjs';
+import { createToken, requireAuth } from './auth.js';
+import { applyLivePrices, buildRecommendation, buildTrend, FORECAST_DAYS, projectPrice } from './forecast.js';
+import * as queries from './queries.js';
+import { applyContaminationPenalties, TRUST_WINDOW_DAYS } from './trustScore.js';
 
-dotenv.config();
+if (!process.env.JWT_SECRET) {
+  console.error('JWT_SECRET is not set. Add it to backend/.env (see backend/.env.example).');
+  process.exit(1);
+}
 
 // 1. INITIALIZE EXPRESS FIRST
 const app = express();
 
 // 2. APPLY THE ROBUST HACKATHON CORS CONFIGURATION IMMEDIATELY
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Date'], // lets the app show how old cached data is
   credentials: true
 }));
 
@@ -24,89 +32,20 @@ app.use(express.json());
 // Cache object for OpenWeather responses to minimize API hits
 const weatherCache = {};
 
-const ZONE_CITY_MAP = {
-  'Nashik North': 'Nashik',
-  'Kota Canal Belt': 'Kota',
-  'Guntur Delta': 'Guntur',
-  'Kolar': 'Kolar',
-  'Tumkur': 'Tumakuru',
-  'Hassan': 'Hassan',
-  'Mandya': 'Mandya'
-};
+const FLAG_SEVERITIES = ['low', 'medium', 'high'];
+const UNIQUE_VIOLATION = '23505';
 
-// In-Memory Database for local states to bypass Supabase for now
-const officersList = [
-  { id: 'officer-001', name: 'Ananya Patil', zone: 'Nashik North', district: 'Nashik', cropsManaged: ['Onion', 'Tomato', 'Grapes'] },
-  { id: 'officer-002', name: 'Rahul Meena', zone: 'Kota Canal Belt', district: 'Kota', cropsManaged: ['Soybean', 'Wheat', 'Coriander'] },
-  { id: 'officer-003', name: 'Farida Begum', zone: 'Guntur Delta', district: 'Guntur', cropsManaged: ['Chilli', 'Paddy', 'Turmeric'] },
-  { id: 'officer-004', name: 'Kavya Rao', zone: 'Kolar', district: 'Kolar', cropsManaged: ['Tomato', 'Ragi', 'Beans'] },
-  { id: 'officer-005', name: 'Manjunath Gowda', zone: 'Tumkur', district: 'Tumakuru', cropsManaged: ['Coconut', 'Arecanut', 'Groundnut'] },
-  { id: 'officer-006', name: 'Nandini Hegde', zone: 'Hassan', district: 'Hassan', cropsManaged: ['Coffee', 'Paddy', 'Pepper'] },
-  { id: 'officer-007', name: 'Suresh Kumar', zone: 'Mandya', district: 'Mandya', cropsManaged: ['Sugarcane', 'Paddy', 'Ragi'] }
-];
+// Compared against when an officer ID is unknown, so response time doesn't reveal which IDs exist
+const UNUSABLE_PASSWORD_HASH = bcrypt.hashSync('no-account-has-this-password', 10);
 
-const farmersList = [
-  { id: 'f-001', name: 'Vilas Jadhav', village: 'Niphad', phone: '+91 98765 12001', crop: 'Onion', acreage: 3.5 },
-  { id: 'f-002', name: 'Savitri More', village: 'Chandori', phone: '+91 98765 12002', crop: 'Tomato', acreage: 2.0 },
-  { id: 'f-003', name: 'Ganesh Pawar', village: 'Ojhar', phone: '+91 98765 12003', crop: 'Grapes', acreage: 4.25 },
-  { id: 'f-004', name: 'Meera Shinde', village: 'Lasalgaon', phone: '+91 98765 12004', crop: 'Onion', acreage: 2.75 },
-  { id: 'f-005', name: 'Iqbal Shaikh', village: 'Palkhed', phone: '+91 98765 12005', crop: 'Tomato', acreage: 1.8 },
-  { id: 'f-006', name: 'Harish Gurjar', village: 'Borkhera', phone: '+91 98765 12006', crop: 'Soybean', acreage: 5.0 },
-  { id: 'f-007', name: 'Kamla Bai', village: 'Sangod', phone: '+91 98765 12007', crop: 'Wheat', acreage: 3.2 },
-  { id: 'f-008', name: 'Prasad Reddy', village: 'Duggirala', phone: '+91 98765 12008', crop: 'Turmeric', acreage: 2.6 },
-  { id: 'f-009', name: 'Lakshmi Devi', village: 'Tenali', phone: '+91 98765 12009', crop: 'Paddy', acreage: 4.8 },
-  { id: 'f-010', name: 'Nagesh Rao', village: 'Pedakakani', phone: '+91 98765 12010', crop: 'Chilli', acreage: 3.9 }
-];
-
-const contaminationFlagsList = [
-  { id: 'c-001', crop: 'Tomato', location: 'Chandori cluster', lat: 20.072, lng: 73.918, severity: 'medium', date: '2026-06-08', batchId: 'NSK-TOM-260608-A' },
-  { id: 'c-002', crop: 'Onion', location: 'Lasalgaon east sheds', lat: 20.139, lng: 74.248, severity: 'low', date: '2026-06-10', batchId: 'NSK-ONI-260610-C' },
-  { id: 'c-003', crop: 'Chilli', location: 'Guntur drying yard 4', lat: 16.309, lng: 80.451, severity: 'high', date: '2026-06-11', batchId: 'GNT-CHI-260611-B' },
-  { id: 'c-004', crop: 'Paddy', location: 'Tenali intake point', lat: 16.247, lng: 80.641, severity: 'medium', date: '2026-06-12', batchId: 'GNT-PAD-260612-D' }
-];
-
-const govtSchemesList = [
-  { id: 's-001', name: 'PM-Kisan Income Support', deadline: '2026-07-15', eligibleCrops: ['All registered crops'], benefitAmount: '₹6,000/year' },
-  { id: 's-002', name: 'MIDH Drip Irrigation Subsidy', deadline: '2026-08-01', eligibleCrops: ['Grapes', 'Tomato', 'Chilli'], benefitAmount: 'Up to 55% equipment subsidy' },
-  { id: 's-003', name: 'Onion Storage Structure Assistance', deadline: '2026-06-30', eligibleCrops: ['Onion'], benefitAmount: '₹87,500 per unit' },
-  { id: 's-004', name: 'RKVY Market Linkage Grant', deadline: '2026-09-10', eligibleCrops: ['Soybean', 'Coriander', 'Turmeric'], benefitAmount: '₹25,000 per FPO member cluster' },
-  { id: 's-005', name: 'Paddy Mechanisation Support', deadline: '2026-07-28', eligibleCrops: ['Paddy'], benefitAmount: '40% machinery subsidy' },
-  { id: 's-006', name: 'Spice Quality Certification Scheme', deadline: '2026-08-20', eligibleCrops: ['Chilli', 'Turmeric', 'Coriander'], benefitAmount: '₹12,000 testing support' }
-];
-
-const priceTrendsList = [
-  { week: 'W1', onion: 1320, tomato: 980, chilli: 12100 },
-  { week: 'W2', onion: 1410, tomato: 1120, chilli: 12650 },
-  { week: 'W3', onion: 1530, tomato: 1260, chilli: 13050 },
-  { week: 'W4', onion: 1620, tomato: 1480, chilli: 13200 },
-  { week: 'W5', onion: 1840, tomato: 1715, chilli: 14150 }
-];
-
-const harvestRecommendationsList = [
-  { id: 'h-001', crop: 'Onion', zone: 'Nashik North', daysToOptimalHarvest: 9, confidence: 87 },
-  { id: 'h-002', crop: 'Tomato', zone: 'Nashik North', daysToOptimalHarvest: 4, confidence: 82 },
-  { id: 'h-003', crop: 'Soybean', zone: 'Kota Canal Belt', daysToOptimalHarvest: 16, confidence: 78 },
-  { id: 'h-004', crop: 'Chilli', zone: 'Guntur Delta', daysToOptimalHarvest: 11, confidence: 91 },
-  { id: 'h-005', crop: 'Paddy', zone: 'Guntur Delta', daysToOptimalHarvest: 21, confidence: 74 }
-];
-
-const smsLogs = [];
-
-const baseMandis = [
-  { id: 'm-001', name: 'Lasalgaon APMC', lat: 20.142, lng: 74.239, currentPrice: 1620, predictedPrice: 1840, supplyTrustScore: 88, crop: 'Onion' },
-  { id: 'm-002', name: 'Pimpalgaon Baswant', lat: 20.166, lng: 73.987, currentPrice: 1480, predictedPrice: 1715, supplyTrustScore: 81, crop: 'Tomato' },
-  { id: 'm-003', name: 'Nashik Market Yard', lat: 19.997, lng: 73.789, currentPrice: 3850, predictedPrice: 4025, supplyTrustScore: 92, crop: 'Grapes' },
-  { id: 'm-004', name: 'Kota Krishi Upaj Mandi', lat: 25.213, lng: 75.864, currentPrice: 4340, predictedPrice: 4210, supplyTrustScore: 76, crop: 'Soybean' },
-  { id: 'm-005', name: 'Ramganj Mandi', lat: 24.646, lng: 75.944, currentPrice: 6920, predictedPrice: 7210, supplyTrustScore: 84, crop: 'Coriander' },
-  { id: 'm-006', name: 'Guntur Mirchi Yard', lat: 16.306, lng: 80.436, currentPrice: 13200, predictedPrice: 14150, supplyTrustScore: 73, crop: 'Chilli' },
-  { id: 'm-007', name: 'Tenali Market Yard', lat: 16.242, lng: 80.64, currentPrice: 2180, predictedPrice: 2325, supplyTrustScore: 79, crop: 'Paddy' },
-  { id: 'm-008', name: 'Duggirala Turmeric Yard', lat: 16.323, lng: 80.617, currentPrice: 7450, predictedPrice: 7810, supplyTrustScore: 86, crop: 'Turmeric' }
-];
+// Sends errors from async route handlers to the error handler at the bottom of this file
+const route = (handler) => (req, res, next) => handler(req, res).catch(next);
 
 async function getZoneWeather(zone) {
-  const city = ZONE_CITY_MAP[zone] || zone;
+  const officer = await queries.getOfficerByZone(zone);
+  const city = officer?.district || zone;
   const now = Date.now();
-  
+
   if (weatherCache[city] && (now - weatherCache[city].timestamp < 600000)) {
     return weatherCache[city].data;
   }
@@ -131,123 +70,130 @@ async function getZoneWeather(zone) {
   }
 }
 
-// Endpoints
-app.get('/api/weather', async (req, res) => {
-  const { zone } = req.query;
-  if (!zone) return res.status(400).json({ error: 'Zone parameter is required' });
-  const weather = await getZoneWeather(zone);
-  res.json(weather);
-});
+async function fetchLivePriceRecords() {
+  if (!process.env.OGD_API_KEY) return [];
 
-app.post('/api/auth/login', (req, res) => {
-  const { officerId, zone } = req.body;
-  const foundOfficer = officersList.find(o => o.zone === zone);
-  if (foundOfficer) {
-    res.json({ ...foundOfficer, id: officerId });
-  } else {
-    res.json({
-      id: officerId,
-      name: 'Dynamic Extension Officer',
-      zone: zone || 'Kolar',
-      district: zone || 'Kolar',
-      cropsManaged: ['Tomato', 'Onion']
-    });
-  }
-});
-
-app.get('/api/mandis', async (req, res) => {
   try {
-    let ogdPrices = {};
-    if (process.env.OGD_API_KEY) {
-      try {
-        const ogdResponse = await axios.get(
-          `https://api.data.gov.in/resource/9ef842f6-9a05-4d7b-85d6-c39f28c245dd`,
-          { params: { 'api-key': process.env.OGD_API_KEY, format: 'json', limit: 100 }, timeout: 5000 }
-        );
-        if (ogdResponse.data && ogdResponse.data.records) {
-          ogdResponse.data.records.forEach(rec => {
-            const crop = rec.commodity ? rec.commodity.toLowerCase() : '';
-            const price = parseFloat(rec.modal_price);
-            if (crop && price) ogdPrices[crop] = price;
-          });
-        }
-      } catch (err) {
-        console.error('OGD API Request failed:', err.message);
-      }
-    }
-
-    const mandisList = baseMandis.map(m => {
-      const baseCrop = m.crop.toLowerCase();
-      let currentPrice = m.currentPrice;
-      let predictedPrice = m.predictedPrice;
-
-      const matchedLiveCrop = Object.keys(ogdPrices).find(k => k.includes(baseCrop) || baseCrop.includes(k));
-      if (matchedLiveCrop && ogdPrices[matchedLiveCrop]) {
-        currentPrice = ogdPrices[matchedLiveCrop];
-        predictedPrice = Math.round(currentPrice * (m.predictedPrice / m.currentPrice));
-      }
-      return { ...m, currentPrice, predictedPrice };
-    });
-
-    res.json(mandisList);
+    const response = await axios.get(
+      `https://api.data.gov.in/resource/9ef842f6-9a05-4d7b-85d6-c39f28c245dd`,
+      { params: { 'api-key': process.env.OGD_API_KEY, format: 'json', limit: 1000, 'filters[state.keyword]': 'Karnataka' }, timeout: 5000 }
+    );
+    return response.data?.records ?? [];
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('OGD API Request failed:', err.message);
+    return [];
   }
-});
+}
 
-app.get('/api/farmers', (req, res) => {
-  const { zone } = req.query;
+async function getTrendsByCrop() {
+  const historyByCrop = {};
+  (await queries.getPriceHistory()).forEach(({ crop, week, actual }) => {
+    (historyByCrop[crop] ??= []).push({ week, actual });
+  });
+  return Object.fromEntries(Object.entries(historyByCrop).map(([crop, history]) => [crop, buildTrend(history)]));
+}
 
-  if (zone) {
-    const officer = officersList.find(o => o.zone === zone);
+const trendFor = (trends, crop) => trends[crop] ?? buildTrend([]);
 
-    // If a zone is provided but no hardcoded officer is found,
-    // return the full farmersList so the dashboard table populates.
-    if (!officer) return res.json(farmersList);
+async function getMandis(trends) {
+  const [baseMandis, recentFlags, liveRecords] = await Promise.all([
+    queries.getMandis(),
+    queries.getRecentFlagLocations(TRUST_WINDOW_DAYS),
+    fetchLivePriceRecords(),
+  ]);
 
-    const filtered = farmersList.filter(f => officer.cropsManaged.includes(f.crop));
-    return res.json(filtered);
+  const pricedMandis = applyLivePrices(baseMandis, liveRecords).map((mandi) => ({
+    ...mandi,
+    predictedPrice: projectPrice(mandi.currentPrice, trendFor(trends, mandi.crop), FORECAST_DAYS),
+  }));
+
+  return applyContaminationPenalties(pricedMandis, recentFlags);
+}
+
+// Endpoints
+app.post('/api/auth/login', route(async (req, res) => {
+  const { officerId, password } = req.body;
+  if (typeof officerId !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Officer ID and password are required' });
   }
 
-  res.json(farmersList);
-});
+  const account = await queries.getOfficerAccount(officerId.trim());
+  const passwordMatches = await bcrypt.compare(password, account?.passwordHash ?? UNUSABLE_PASSWORD_HASH);
 
-app.get('/api/harvest-recommendations', async (req, res) => {
-  const { zone } = req.query;
+  if (!account?.passwordHash || !passwordMatches) {
+    return res.status(401).json({ error: 'Incorrect officer ID or password' });
+  }
 
-  if (!zone) return res.json(harvestRecommendationsList);
+  res.json({ token: createToken(account.officer), officer: account.officer });
+}));
 
-  const filtered = harvestRecommendationsList.filter(h => h.zone === zone);
+// Everything below needs a signed-in officer, and zone always comes from their token.
+app.use('/api', requireAuth);
 
-  // If zone filtering produces an empty array due to mismatch,
-  // bypass filter and return full list as fallback.
-  if (filtered.length === 0) return res.json(harvestRecommendationsList);
+app.get('/api/weather', route(async (req, res) => {
+  res.json(await getZoneWeather(req.officer.zone));
+}));
 
-  res.json(filtered);
-});
+app.get('/api/mandis', route(async (req, res) => {
+  res.json(await getMandis(await getTrendsByCrop()));
+}));
 
-app.get('/api/contamination-flags', (req, res) => {
-  res.json(contaminationFlagsList);
-});
+app.get('/api/farmers', route(async (req, res) => {
+  res.json(await queries.getFarmers(req.officer.zone));
+}));
 
-app.get('/api/govt-schemes', (req, res) => {
-  res.json(govtSchemesList);
-});
+app.get('/api/harvest-recommendations', route(async (req, res) => {
+  const trends = await getTrendsByCrop();
+  const [plans, mandis] = await Promise.all([queries.getCropPlans(req.officer.zone), getMandis(trends)]);
 
-app.get('/api/price-trends', (req, res) => {
-  res.json(priceTrendsList);
-});
+  res.json(plans.map((plan) => buildRecommendation(plan, trendFor(trends, plan.crop), mandis)).filter(Boolean));
+}));
 
-app.post('/api/sms/send', (req, res) => {
-  const { officerId, message } = req.body;
-  if (!message || !officerId) return res.status(400).json({ error: 'Officer ID and message content are required' });
-  const logEntry = { id: smsLogs.length + 1, officer_id: officerId, message: message, created_at: new Date().toISOString(), status: 'Sent' };
-  smsLogs.push(logEntry);
-  res.json({ success: true, log: logEntry });
-});
+app.get('/api/contamination-flags', route(async (req, res) => {
+  res.json(await queries.getContaminationFlags(req.officer.zone));
+}));
 
-app.get('/api/sms/logs', (req, res) => {
-  res.json(smsLogs);
+app.post('/api/contamination-flags', route(async (req, res) => {
+  const { crop, location, severity, batchId, lat, lng } = req.body;
+
+  if (!crop || !location || !batchId || !FLAG_SEVERITIES.includes(severity) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'crop, location, severity, batchId, lat and lng are required' });
+  }
+
+  try {
+    res.status(201).json(await queries.createContaminationFlag({ ...req.body, zone: req.officer.zone }));
+  } catch (err) {
+    if (err.code === UNIQUE_VIOLATION) return res.status(409).json({ error: 'That batch ID has already been flagged' });
+    throw err;
+  }
+}));
+
+app.get('/api/govt-schemes', route(async (req, res) => {
+  res.json(await queries.getGovtSchemes(req.officer.zone));
+}));
+
+app.get('/api/price-trends', route(async (req, res) => {
+  const { crop } = req.query;
+  const [history, seasons] = await Promise.all([queries.getPriceHistory(crop), queries.getPriceSeasons(crop)]);
+  if (!crop || history.length === 0) return res.status(404).json({ error: 'Unknown crop' });
+  res.json({ series: buildTrend(history).series, seasons });
+}));
+
+// Only records the message in the log. No SMS is sent until a gateway is added.
+app.post('/api/sms/send', route(async (req, res) => {
+  if (!req.body.message) return res.status(400).json({ error: 'Message content is required' });
+  const log = await queries.createSmsLog({ ...req.body, officerId: req.officer.id, zone: req.officer.zone });
+  res.json({ success: true, log });
+}));
+
+app.get('/api/sms/logs', route(async (req, res) => {
+  res.json(await queries.getSmsLogs(req.officer.zone));
+}));
+
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Something went wrong on the server' });
 });
 
 const PORT = process.env.PORT || 5000;
