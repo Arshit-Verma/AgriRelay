@@ -1,73 +1,98 @@
 import React, { useState, useEffect } from "react";
-import { Send, Search, Check, CheckCircle2, ChevronDown, ChevronUp, Edit3, MessageSquare, Clock, Globe2 } from 'lucide-react';
+import { Send, Search, CheckCircle2, ChevronDown, ChevronUp, Edit3, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
-
-// --- HARDCODED SIMULATOR DATA MATRICES ---
-const FARMERS = [
-  { id: 1, name: "Raju Gowda", village: "Mulbagal", crop: "Tomato", phone: "98XX XX4821", acreage: 3.2 },
-  { id: 2, name: "Lakshmi Devi", village: "Srinivaspur", crop: "Tomato", phone: "97XX XX1193", acreage: 2.1 },
-  { id: 3, name: "Venkatesh K", village: "Bangarpet", crop: "Onion", phone: "99XX XX8874", acreage: 4.5 },
-  { id: 4, name: "Muniraj S", village: "KGF Block", crop: "Tomato", phone: "98XX XX2256", acreage: 1.8 },
-  { id: 5, name: "Savitha Bai", village: "Malur", crop: "Maize", phone: "96XX XX5532", acreage: 5.0 },
-  { id: 6, name: "Hanumaiah T", village: "Kolar", crop: "Tomato", phone: "97XX XX9910", acreage: 2.7 },
-  { id: 7, name: "Parvathi N", village: "Gudibanda", crop: "Onion", phone: "98XX XX3341", acreage: 3.3 },
-  { id: 8, name: "Basavaraju M", village: "Chintamani", crop: "Maize", phone: "99XX XX7762", acreage: 6.1 },
-  { id: 9, name: "Kamala R", village: "Sidlaghatta", crop: "Tomato", phone: "97XX XX4453", acreage: 1.5 },
-  { id: 10, name: "Thimma Reddy", village: "Bagepalli", crop: "Onion", phone: "98XX XX8821", acreage: 4.0 }
-];
-
-const TEMPLATES = {
-  market: (crop, mandi, price, date) =>
-    `AgriRelay Alert: ${crop} prices forecast at Rs.${price}/q at ${mandi}. Best window: before ${date}. Contact your extension officer to arrange transport.`,
-  harvest: (crop, days, window) =>
-    `AgriRelay Alert: Your ${crop} crop is ready to harvest in ${days} days. Optimal window: ${window}. Do not delay beyond this date.`,
-  scheme: (name, benefit, deadline) =>
-    `AgriRelay: Govt scheme '${name}' offers ${benefit}. Apply before ${deadline} at your nearest agri office. Bring land records.`
-};
-
-const KANNADA_MAPPING = {
-  Tomato: "ಟೊಮೇಟೊ ಬೆಲೆ ₹520/ಕ್ವಿ. ಬೆಂಗಳೂರು APMC ಗೆ ಕಳುಹಿಸಿ. ದಿನಾಂಕ: ಜೂನ್ 22 ರೊಳಗೆ.",
-  Onion: "ಅಗ್ರೀರಿಲೇ ಪ್ರಕಟಣೆ: ಉಳ್ಳಾಗಡ್ಡಿ ಬೆಲೆ ಸ್ಥಿರವಾಗಿದೆ. ತುಮಕೂರು ಎಪಿಎಂಸಿ ಮಾರುಕಟ್ಟೆ ಜೂನ್ 28 ರೊಳಗೆ ಸಂಪರ್ಕಿಸಿ.",
-  Maize: "ಅಗ್ರೀರಿಲೇ ಪ್ರಕಟಣೆ: ಮೆಕ್ಕೆಜೋಳ ಬೆಂಬಲ ಬೆಲೆ ₹240/ಕ್ವಿ. ಹಾಸನ ಮಾರುಕಟ್ಟೆಗೆ ಭೇಟಿ ನೀಡಿ."
-};
+import { postOrQueue } from '../api/outbox';
+import PageStatus from '../components/ui/PageStatus';
+import { CROP_BADGE_CLASSES } from '../constants/crops';
+import { buildRoutingMessage, buildTemplateMessage } from '../constants/smsTemplates';
+import { useAuth } from '../context/AuthContext';
+import { useApi } from '../hooks/useApi';
+import { formatDateTime } from '../utils/format';
 
 export default function SMSRelay() {
+  const { officer } = useAuth();
+  const farmers = useApi('/api/farmers');
+  const recommendations = useApi('/api/harvest-recommendations');
+  const schemes = useApi('/api/govt-schemes');
+  const logs = useApi('/api/sms/logs');
+
   // State Matrices
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFarmers, setSelectedFarmers] = useState([]);
   const [activeTemplate, setActiveTemplate] = useState("market");
+  const [chosenCrop, setChosenCrop] = useState(null);
   const [isEditable, setIsEditable] = useState(false);
   const [lang, setLang] = useState("EN");
-  const [history, setHistory] = useState([
-    { id: 1, time: "08:04 AM", crop: "Tomato", recipients: 8, message: "AgriRelay Alert: Tomato prices forecast at Rs.520/q at Bangalore APMC. Best window: before Jun 22.", status: "Delivered", expanded: false },
-    { id: 2, time: "Yesterday 6:30 PM", crop: "Onion", recipients: 3, message: "AgriRelay Alert: Your Onion crop is ready to harvest in 14 days. Optimal window: Jun 28-Jul 2.", status: "Delivered", expanded: false },
-    { id: 3, time: "Jun 12 9:00 AM", crop: "Maize", recipients: 5, message: "AgriRelay: Govt scheme 'MIDH Drip Irrigation' offers 55% subsidy. Apply before Aug 01.", status: "Delivered", expanded: false }
-  ]);
-  
-  // Custom Dynamic Message Builders
-  const [compiledMessage, setCompiledMessage] = useState(TEMPLATES.market("Tomato", "Bangalore APMC", "520", "Jun 22"));
-  
+  const [sentThisSession, setSentThisSession] = useState([]);
+  const [expandedLogIds, setExpandedLogIds] = useState([]);
+
+  // Text the officer typed or another page handed over. Null means "use the template".
+  const [draft, setDraft] = useState(null);
+
   // Modal Animation Triggers
   const [showModal, setShowModal] = useState(false);
   const [animStep, setAnimStep] = useState(0);
 
-  // Sync templates on control toggles
+  // Pick up anything another page sent here, once the farmer list has loaded
   useEffect(() => {
-    if (lang === "KN") {
-      setCompiledMessage(`AgriRelay: ${KANNADA_MAPPING[activeTemplate === "market" ? "Tomato" : activeTemplate === "harvest" ? "Onion" : "Maize"] || "ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ"}`);
-      return;
+    if (!farmers.data) return;
+
+    const selectFarmersGrowing = (crops) => {
+      setSelectedFarmers(farmers.data.filter((f) => crops.includes(f.crop)).map((f) => f.id));
+    };
+
+    const harvestCrop = sessionStorage.getItem("harvestAlertCrop");
+    if (harvestCrop) {
+      sessionStorage.removeItem("harvestAlertCrop");
+      setChosenCrop(harvestCrop);
+      setActiveTemplate("harvest");
+      selectFarmersGrowing([harvestCrop]);
     }
-    if (activeTemplate === "market") {
-      setCompiledMessage(TEMPLATES.market("Tomato", "Bangalore APMC", "520", "Jun 22"));
-    } else if (activeTemplate === "harvest") {
-      setCompiledMessage(TEMPLATES.harvest("Tomato", "6", "Jun 20-24"));
-    } else {
-      setCompiledMessage(TEMPLATES.scheme("MIDH Drip Irrigation Subsidy", "Up up 55% equipment support", "Aug 01"));
+
+    const schemeText = sessionStorage.getItem("activeTemplateText");
+    if (schemeText) {
+      sessionStorage.removeItem("activeTemplateText");
+      setActiveTemplate("scheme");
+      setDraft(schemeText);
     }
-  }, [activeTemplate, lang]);
+
+    const storedWatchlist = sessionStorage.getItem("alertWatchlist");
+    if (storedWatchlist) {
+      sessionStorage.removeItem("alertWatchlist");
+      const watchlist = JSON.parse(storedWatchlist);
+      setActiveTemplate("market");
+      setDraft(buildRoutingMessage(watchlist));
+      selectFarmersGrowing(watchlist.map((mandi) => mandi.crop));
+    }
+  }, [farmers.data]);
+
+  if (!farmers.data || !recommendations.data || !schemes.data || !logs.data) {
+    return <PageStatus error={farmers.error || recommendations.error || schemes.error || logs.error} />;
+  }
+
+  const crops = recommendations.data.map((rec) => rec.crop);
+  const focusCrop = chosenCrop ?? crops[0];
+  const focusRecommendation = recommendations.data.find((rec) => rec.crop === focusCrop);
+  const compiledMessage = draft ?? buildTemplateMessage(activeTemplate, lang, focusRecommendation, schemes.data[0]);
+  const history = [...sentThisSession, ...logs.data];
+
+  const chooseTemplate = (template) => {
+    setActiveTemplate(template);
+    setDraft(null);
+  };
+
+  const chooseCrop = (crop) => {
+    setChosenCrop(crop);
+    setDraft(null);
+  };
+
+  const chooseLanguage = (language) => {
+    setLang(language);
+    setDraft(null);
+  };
 
   // Search logic filtration
-  const filteredFarmers = FARMERS.filter(f => 
+  const filteredFarmers = farmers.data.filter(f =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     f.village.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -78,10 +103,9 @@ export default function SMSRelay() {
     );
   };
 
-  const selectAllTomato = () => {
-    const tomatoIds = FARMERS.filter(f => f.crop === "Tomato").map(f => f.id);
-    setSelectedFarmers(tomatoIds);
-    toast.success("Selected all Tomato category farmers");
+  const selectAllFocusCropFarmers = () => {
+    setSelectedFarmers(farmers.data.filter(f => f.crop === focusCrop).map(f => f.id));
+    toast.success(`Selected all ${focusCrop} category farmers`);
   };
 
   const triggerRelayDispatch = () => {
@@ -93,31 +117,39 @@ export default function SMSRelay() {
     setShowModal(true);
 
     // Staggered interface mock execution chains
-    setTimeout(() => setAnimStep(1), 400);  // Bubble 1
-    setTimeout(() => setAnimStep(2), 900);  // Bubble 2
-    setTimeout(() => setAnimStep(3), 1300); // Delivered banner
-    setTimeout(() => setAnimStep(4), 1600); // Receipt logs load
+    setTimeout(() => setAnimStep(1), 400);  // Message bubble
+    setTimeout(() => setAnimStep(2), 1000); // Delivered banner
+    setTimeout(() => setAnimStep(3), 1400); // Receipt logs load
   };
 
   const handleModalComplete = () => {
-    // Inject mock layout straight back into history tracking variables
-    const newHistoryEntry = {
-      id: history.length + 1,
-      time: "Now",
-      crop: "Tomato",
-      recipients: selectedFarmers.length,
-      message: compiledMessage,
-      status: "Delivered",
-      expanded: false
-    };
-    setHistory([newHistoryEntry, ...history]);
+    const recipients = selectedFarmers.length;
+
+    // The send itself is simulated; this only records it in the message log
+    const entry = { crop: focusCrop, recipients, message: compiledMessage };
+
+    postOrQueue("/api/sms/send", entry, officer.id)
+      .then(({ saved, result }) => {
+        if (saved) {
+          setSentThisSession((current) => [result.log, ...current]);
+          toast.success(`SMS relay complete. ${recipients} farmers notified.`);
+        } else {
+          const waiting = { ...entry, id: `waiting-${Date.now()}`, sentAt: new Date().toISOString(), status: "Waiting to sync" };
+          setSentThisSession((current) => [waiting, ...current]);
+          toast.success("You're offline. The log entry will sync when you reconnect.");
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error("The message could not be saved to the log.");
+      });
+
     setShowModal(false);
-    toast.success(`SMS relay complete. ${selectedFarmers.length} farmers notified.`);
     setSelectedFarmers([]);
   };
 
   const toggleHistoryExpand = (id) => {
-    setHistory(history.map(item => item.id === id ? { ...item, expanded: !item.expanded } : item));
+    setExpandedLogIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   };
 
   return (
@@ -154,17 +186,17 @@ export default function SMSRelay() {
             </div>
 
             <button 
-              onClick={selectAllTomato}
+              onClick={selectAllFocusCropFarmers}
               className="w-full h-8 border border-[#2D6A4F]/20 text-[#2D6A4F] hover:bg-green-50/50 text-xs font-semibold rounded-lg transition"
             >
-              Select all Tomato farmers
+              Select all {focusCrop} farmers
             </button>
 
             {/* SCROLLABLE PROFILE RENDER CELL RACKS */}
             <div className="border border-gray-100 rounded-lg divide-y divide-gray-50 max-h-[220px] overflow-y-auto bg-gray-50/30">
               {filteredFarmers.map((farmer) => {
                 const isChecked = selectedFarmers.includes(farmer.id);
-                const badgeColor = farmer.crop === "Tomato" ? "bg-red-50 text-red-700 border-red-100" : farmer.crop === "Onion" ? "bg-purple-50 text-purple-700 border-purple-100" : "bg-amber-50 text-amber-700 border-amber-100";
+                const badgeColor = CROP_BADGE_CLASSES[farmer.crop];
                 
                 return (
                   <div 
@@ -183,7 +215,7 @@ export default function SMSRelay() {
                     <div className="flex-grow min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-[13px] font-semibold text-[#1B1B1B] truncate">{farmer.name}</p>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.2 border rounded ${badgeColor}`}>{farmer.crop}</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-px border rounded ${badgeColor}`}>{farmer.crop}</span>
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-gray-400 mt-0.5">
                         <p>{farmer.village}</p>
@@ -211,12 +243,26 @@ export default function SMSRelay() {
               ].map(t => (
                 <button
                   key={t.id}
-                  onClick={() => setActiveTemplate(t.id)}
+                  onClick={() => chooseTemplate(t.id)}
                   className={`py-2 text-[11px] font-bold rounded-lg transition border border-transparent ${
                     activeTemplate === t.id ? "bg-[#2D6A4F] text-white" : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
                   }`}
                 >
                   {t.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-gray-400 mr-1">Crop:</span>
+              {crops.map((crop) => (
+                <button
+                  key={crop}
+                  onClick={() => chooseCrop(crop)}
+                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition border ${
+                    focusCrop === crop ? "bg-[#2D6A4F] border-[#2D6A4F] text-white" : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                  }`}
+                >
+                  {crop}
                 </button>
               ))}
             </div>
@@ -241,11 +287,11 @@ export default function SMSRelay() {
               {isEditable ? (
                 <textarea
                   value={compiledMessage}
-                  onChange={(e) => setCompiledMessage(e.target.value)}
+                  onChange={(e) => setDraft(e.target.value)}
                   className="w-full min-h-[100px] p-3 rounded-lg bg-gray-50 border border-gray-200 font-mono text-[12px] text-[#1B1B1B] outline-none focus:border-[#2D6A4F] resize-none leading-relaxed"
                 />
               ) : (
-                <div className="w-full min-h-[100px] p-3 rounded-lg bg-gray-100 border border-gray-150 font-mono text-[12px] text-[#1B1B1B] leading-relaxed break-words">
+                <div className="w-full min-h-[100px] p-3 rounded-lg bg-gray-100 border border-gray-200 font-mono text-[12px] text-[#1B1B1B] leading-relaxed break-words">
                   {compiledMessage}
                 </div>
               )}
@@ -260,8 +306,8 @@ export default function SMSRelay() {
                 {["EN", "KN"].map(l => (
                   <button
                     key={l}
-                    onClick={() => setLang(l)}
-                    className={`px-2 py-0.5 text-[10px] font-bold rounded ${lang === l ? "bg-[#2D6A4F] text-white shadow-xs" : "text-gray-500"}`}
+                    onClick={() => chooseLanguage(l)}
+                    className={`px-2 py-0.5 text-[10px] font-bold rounded ${lang === l ? "bg-[#2D6A4F] text-white shadow-sm" : "text-gray-500"}`}
                   >
                     {l === "EN" ? "English" : "ಕನ್ನಡ"}
                   </button>
@@ -271,7 +317,7 @@ export default function SMSRelay() {
 
             <button
               onClick={triggerRelayDispatch}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#2D6A4F] text-sm font-semibold text-white transition hover:bg-[#1B4D37] shadow-xs"
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#2D6A4F] text-sm font-semibold text-white transition hover:bg-[#1B4D37] shadow-sm"
             >
               <Send size={15} />
               <span>Send to {selectedFarmers.length} farmers</span>
@@ -281,7 +327,7 @@ export default function SMSRelay() {
         </div>
 
         {/* RIGHT METRIC HISTORY INDEX COLUMN */}
-        <div className="bg-white border border-black/10 rounded-xl p-6 flex flex-col justify-between overflow-y-auto max-h-full shadow-xs">
+        <div className="bg-white border border-black/10 rounded-xl p-6 flex flex-col justify-between overflow-y-auto max-h-full shadow-sm">
           <div>
             <h3 className="text-[16px] font-bold text-[#1B1B1B] border-b border-gray-100 pb-3 mb-4">Transmission Logs & History</h3>
             
@@ -290,24 +336,24 @@ export default function SMSRelay() {
               {history.map((card) => (
                 <div 
                   key={card.id}
-                  className="bg-white border border-[#E5E7EB] rounded-xl p-3 mb-3 shadow-xs flex flex-col gap-2 transition duration-150 group"
+                  className="bg-white border border-[#E5E7EB] rounded-xl p-3 mb-3 shadow-sm flex flex-col gap-2 transition duration-150 group"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-gray-400">{card.time}</span>
+                    <span className="text-[11px] font-medium text-gray-400">{formatDateTime(card.sentAt)}</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-gray-50 border border-gray-100 rounded text-gray-600">
+                      <span className="text-[10px] font-bold px-1.5 py-px bg-gray-50 border border-gray-100 rounded text-gray-600">
                         {card.crop}
                       </span>
                       <button 
                         onClick={() => toggleHistoryExpand(card.id)}
                         className="text-gray-300 group-hover:text-gray-500 transition"
                       >
-                        {card.expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        {expandedLogIds.includes(card.id) ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                       </button>
                     </div>
                   </div>
 
-                  <p className={`text-[13px] font-normal text-[#4B5563] leading-relaxed ${!card.expanded && "truncate pr-4"}`}>
+                  <p className={`text-[13px] font-normal text-[#4B5563] leading-relaxed ${!expandedLogIds.includes(card.id) && "truncate pr-4"}`}>
                     {card.message}
                   </p>
 
@@ -344,7 +390,7 @@ export default function SMSRelay() {
 
       {/* FAKE PHONE MODAL STAGGERED OVERLAY PLATFORM WINDOW */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="relative flex flex-col items-center max-w-lg w-full">
             
             {/* FORCE EXIT OUT TRAP BUTTON COUNTER OVERLAY */}
@@ -387,28 +433,18 @@ export default function SMSRelay() {
                 {/* THREAD CONTAINER CHAT WINDOW PORT LIST RACKS */}
                 <div className="flex-grow flex flex-col gap-3 justify-end pb-4 overflow-y-auto px-1">
                   
-                  {/* BUBBLE 1 MOUNT BLOCK */}
+                  {/* MESSAGE BUBBLE: shows the text the officer composed */}
                   {animStep >= 1 && (
                     <div className="flex flex-col items-end gap-1 w-full max-w-[90%] self-end animate-in fade-in slide-in-from-bottom-3 duration-300">
                       <div className="bg-[#2D6A4F] text-white text-[11px] leading-relaxed rounded-[18px] rounded-br-[4px] p-2.5 shadow-sm break-words text-left font-sans">
-                        AgriRelay Alert: Tomato prices forecast at Rs.520/q at Bangalore APMC. Best window: before Jun 22.
-                      </div>
-                      <span className="text-[9px] font-semibold text-white/40 leading-none pr-1">Now · Delivered</span>
-                    </div>
-                  )}
-
-                  {/* BUBBLE 2 MOUNT BLOCK */}
-                  {animStep >= 2 && (
-                    <div className="flex flex-col items-end gap-1 w-full max-w-[90%] self-end animate-in fade-in slide-in-from-bottom-3 duration-300">
-                      <div className="bg-[#2D6A4F] text-white text-[11px] leading-relaxed rounded-[18px] rounded-br-[4px] p-2.5 shadow-sm break-words text-left font-sans">
-                        Contact your extension officer to arrange transport. -AgriRelay
+                        {compiledMessage}
                       </div>
                       <span className="text-[9px] font-semibold text-white/40 leading-none pr-1">Now · Delivered</span>
                     </div>
                   )}
 
                   {/* DELIVERED BOTTOM ACKNOWLEDGMENT TIER BANNER */}
-                  {animStep >= 3 && (
+                  {animStep >= 2 && (
                     <p className="text-center text-[10px] font-medium text-white/60 py-1 font-sans animate-in fade-in duration-200">
                       ✓ Delivered to {selectedFarmers.length} farmers cell gateways
                     </p>
@@ -419,13 +455,13 @@ export default function SMSRelay() {
             </div>
 
             {/* STAGGERED RECIPIENT DELIVERY CONFIRMATION RECEIPT LOG CARDS RACK OVERLAY CONTAINER */}
-            {animStep >= 4 && (
+            {animStep >= 3 && (
               <div className="mt-5 w-[320px] bg-white rounded-xl p-4 shadow-xl border border-black/5 flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-4 duration-300">
                 <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100 pb-1.5">Network Transmission Logs</h4>
                 
                 <div className="max-h-[140px] overflow-y-auto divide-y divide-gray-50 pr-0.5">
                   {selectedFarmers.map((id, index) => {
-                    const farmerProfile = FARMERS.find(f => f.id === id);
+                    const farmerProfile = farmers.data.find(f => f.id === id);
                     if (!farmerProfile) return null;
                     const simulatedLatency = 120 + (index * 45);
 

@@ -1,87 +1,35 @@
 import React, { useState } from "react";
-import { MessageSquare, Clock, TrendingUp, ChevronRight } from 'lucide-react';
+import { MessageSquare, Clock, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ComposedChart, Line, Area, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import PageStatus from '../components/ui/PageStatus';
+import { CROP_COLORS } from '../constants/crops';
+import { useZone } from '../context/ZoneContext';
+import { useApi } from '../hooks/useApi';
+import { formatDate, formatShortDate } from '../utils/format';
 
-// --- HARDCODED SIMULATOR DATA MATRICES ---
-const HARVEST_RECS = [
-  {
-    id: 1, crop: "Tomato", zone: "Kolar", daysToHarvest: 6,
-    windowStart: "Jun 20, 2026", windowEnd: "Jun 24, 2026",
-    confidence: 87, accentColor: "#E63946",
-    reasoning: "Bangalore APMC price peaks week of Jun 22. Neighboring Chikkaballapur supply dropping 34%.",
-    targetMandi: "Bangalore APMC", targetPrice: 520, currentPrice: 310
-  },
-  {
-    id: 2, crop: "Onion", zone: "Kolar", daysToHarvest: 14,
-    windowStart: "Jun 28, 2026", windowEnd: "Jul 2, 2026",
-    confidence: 72, accentColor: "#9333EA",
-    reasoning: "Tumkur APMC shows demand spike. Rain forecast delays Bellary supply by 10–12 days.",
-    targetMandi: "Tumkur APMC", targetPrice: 490, currentPrice: 420
-  },
-  {
-    id: 3, crop: "Maize", zone: "Kolar", daysToHarvest: 21,
-    windowStart: "Jul 5, 2026", windowEnd: "Jul 9, 2026",
-    confidence: 61, accentColor: "#F4A261",
-    reasoning: "Poultry feed demand rising in Hassan district. Optimal window before monsoon peak.",
-    targetMandi: "Hassan Mandi", targetPrice: 240, currentPrice: 190
-  }
-];
-
-const PRICE_DATA = {
-  Tomato: [
-    { week: "W1", actual: 290 }, { week: "W2", actual: 310 }, { week: "W3", actual: 295 },
-    { week: "W4", actual: 330 }, { week: "W5", actual: 305 }, { week: "W6", actual: 340 },
-    { week: "W7", actual: 360 }, { week: "W8", actual: 380 },
-    { week: "W9", forecast: 420, min: 400, max: 460 },
-    { week: "W10", forecast: 490, min: 460, max: 520 },
-    { week: "W11", forecast: 510, min: 480, max: 540 }
-  ],
-  Onion: [
-    { week: "W1", actual: 380 }, { week: "W2", actual: 395 }, { week: "W3", actual: 410 },
-    { week: "W4", actual: 390 }, { week: "W5", actual: 405 }, { week: "W6", actual: 420 },
-    { week: "W7", actual: 430 }, { week: "W8", actual: 425 },
-    { week: "W9", forecast: 455, min: 440, max: 470 },
-    { week: "W10", forecast: 480, min: 460, max: 500 },
-    { week: "W11", forecast: 490, min: 470, max: 510 }
-  ],
-  Maize: [
-    { week: "W1", actual: 180 }, { week: "W2", actual: 185 }, { week: "W3", actual: 190 },
-    { week: "W4", actual: 188 }, { week: "W5", actual: 195 }, { week: "W6", actual: 200 },
-    { week: "W7", actual: 205 }, { week: "W8", actual: 210 },
-    { week: "W9", forecast: 225, min: 215, max: 235 },
-    { week: "W10", forecast: 235, min: 225, max: 248 },
-    { week: "W11", forecast: 240, min: 228, max: 255 }
-  ]
-};
-
-const HISTORICAL_TABLES = {
-  Tomato: [
-    { season: "Kharif '25", week: "W9", price: "₹480/q", delta: "+12% above avg", isPos: true },
-    { season: "Rabi '25", week: "W7", price: "₹290/q", delta: "-18% below avg", isPos: false },
-    { season: "Kharif '24", week: "W10", price: "₹510/q", delta: "+19% above avg", isPos: true }
-  ],
-  Onion: [
-    { season: "Kharif '25", week: "W8", price: "₹440/q", delta: "+8%", isPos: true },
-    { season: "Rabi '25", week: "W6", price: "₹310/q", delta: "-22%", isPos: false },
-    { season: "Kharif '24", week: "W9", price: "₹460/q", delta: "+11%", isPos: true }
-  ],
-  Maize: [
-    { season: "Kharif '25", week: "W9", price: "₹225/q", delta: "+7%", isPos: true },
-    { season: "Rabi '25", week: "W8", price: "₹178/q", delta: "-14%", isPos: false },
-    { season: "Kharif '24", week: "W10", price: "₹238/q", delta: "+9%", isPos: true }
-  ]
-};
+// Recharts draws a band between two values when dataKey returns a [min, max] pair
+const forecastRange = (point) => (point.min == null ? null : [point.min, point.max]);
 
 export default function HarvestAdvisor() {
   const navigate = useNavigate();
-  const [selectedCrop, setSelectedCrop] = useState("Tomato");
+  const { zone } = useZone();
+  const [selectedCrop, setSelectedCrop] = useState(null);
+  const recommendations = useApi('/api/harvest-recommendations');
+  const activeCrop = selectedCrop ?? recommendations.data?.[0]?.crop;
+  const priceTrend = useApi(activeCrop ? '/api/price-trends' : null, { crop: activeCrop });
+
+  if (!recommendations.data || !priceTrend.data) {
+    return <PageStatus error={recommendations.error || priceTrend.error} />;
+  }
 
   // Filter out variables based on active selection hooks layout state context
-  const activeRec = HARVEST_RECS.find(r => r.crop === selectedCrop);
-  const activeChartData = PRICE_DATA[selectedCrop];
-  const activeTableData = HISTORICAL_TABLES[selectedCrop];
+  const activeRec = recommendations.data.find(r => r.crop === activeCrop);
+  const activeChartData = priceTrend.data.series;
+  const activeTableData = priceTrend.data.seasons;
+  const todayWeek = activeChartData.filter((point) => point.actual !== undefined).at(-1)?.week;
+  const priceChange = activeRec.targetPrice - activeRec.currentPrice;
 
   // Logic calculation handler parameters to paint segmented bars metrics components
   const activeSegmentsCount = Math.round(activeRec.confidence / 20);
@@ -91,8 +39,14 @@ export default function HarvestAdvisor() {
     return "#E63946";
   };
 
+  const handleNotifyFarmers = () => {
+    sessionStorage.setItem("harvestAlertCrop", activeCrop);
+    navigate('/sms-relay');
+  };
+
   const handleSnooze = () => {
-    toast.success("Snoozed. Will remind Jun 16.", {
+    const remindOn = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    toast.success(`Snoozed. Will remind ${formatShortDate(remindOn)}.`, {
       icon: "⏰",
       style: { borderRadius: '8px', background: '#1B1B1B', color: '#FFF' }
     });
@@ -124,7 +78,7 @@ export default function HarvestAdvisor() {
       
       {/* STATIC TOPBAR EMBED PANEL LAYER LINK */}
       <div className="flex flex-col gap-2 border-b border-black/10 bg-[#F8F9F2] pb-4 mb-4 shrink-0">
-        <h1 className="text-[22px] font-bold text-[#1B1B1B]">Harvest Advisor — Kolar Zone</h1>
+        <h1 className="text-[22px] font-bold text-[#1B1B1B]">Harvest Advisor — {zone} Zone</h1>
         <p className="text-xs font-semibold text-gray-400">Demand pressure calculations optimized for local extension networks</p>
       </div>
 
@@ -136,15 +90,15 @@ export default function HarvestAdvisor() {
           
           {/* HORIZONTAL PILL CONTROLLERS ROW TIER */}
           <div className="flex items-center gap-2 shrink-0">
-            {HARVEST_RECS.map((rec) => {
-              const isActive = selectedCrop === rec.crop;
+            {recommendations.data.map((rec) => {
+              const isActive = activeCrop === rec.crop;
               return (
                 <button
                   key={rec.id}
                   onClick={() => setSelectedCrop(rec.crop)}
                   style={{
-                    backgroundColor: isActive ? rec.accentColor : 'transparent',
-                    borderColor: isActive ? rec.accentColor : '#E5E7EB',
+                    backgroundColor: isActive ? CROP_COLORS[rec.crop] : 'transparent',
+                    borderColor: isActive ? CROP_COLORS[rec.crop] : '#E5E7EB',
                     color: isActive ? '#FFFFFF' : '#6B7280'
                   }}
                   className={`flex-1 text-center py-2 text-[13px] font-semibold rounded-lg border transition duration-150 ${
@@ -160,26 +114,26 @@ export default function HarvestAdvisor() {
           {/* SINGLE TARGET FIELD LIVE ADVISORY RECOMMENDATION CARD */}
           <div 
             className="bg-white rounded-xl p-6 shadow-sm flex flex-col justify-between"
-            style={{ borderLeft: `4px solid ${activeRec.accentColor}`, gap: '20px' }}
+            style={{ borderLeft: `4px solid ${CROP_COLORS[activeRec.crop]}`, gap: '20px' }}
           >
             {/* ROW 1: HEADER SECTION PILL INFO */}
             <div className="flex items-center justify-between">
               <h2 className="text-[20px] font-bold text-[#1B1B1B] font-sans leading-none">{activeRec.crop}</h2>
               <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
-                Kolar Zone
+                {zone} Zone
               </span>
             </div>
 
             {/* ROW 2: COUNTDOWN MATRIX CLOCK ENGINE TEXT SPLIT */}
             <div>
               <div className="flex items-baseline justify-center py-2">
-                <span className="text-[64px] font-extrabold tracking-tight leading-none" style={{ color: activeRec.accentColor }}>
-                  {activeRec.daysToHarvest}
+                <span className="text-[64px] font-extrabold tracking-tight leading-none" style={{ color: CROP_COLORS[activeRec.crop] }}>
+                  {activeRec.daysToOptimalHarvest}
                 </span>
                 <span className="text-[16px] font-normal text-[#6B7280] ml-2 font-sans">days to harvest</span>
               </div>
               <p className="text-center text-[14px] font-medium text-[#1B1B1B] font-sans mt-1">
-                Optimal window: {activeRec.windowStart} – {activeRec.windowEnd}
+                Optimal window: {formatDate(activeRec.windowStart)} – {formatDate(activeRec.windowEnd)}
               </p>
             </div>
 
@@ -223,15 +177,19 @@ export default function HarvestAdvisor() {
                   ₹{activeRec.currentPrice}/q now <span className="mx-1 text-gray-300">→</span> <span className="text-[16px] font-bold text-[#2D6A4F]">₹{activeRec.targetPrice}/q predicted</span>
                 </span>
                 <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-xs font-bold text-[#2D6A4F]">
-                  +₹{activeRec.targetPrice - activeRec.currentPrice}/q
+                  {priceChange >= 0 ? '+' : '−'}₹{Math.abs(priceChange)}/q
                 </span>
               </div>
+              <p className="text-xs font-medium text-[#6B7280]">
+                Keeps <span className="font-bold text-[#1B1B1B]">₹{activeRec.netPrice}/q</span>{' '}
+                {activeRec.transportCost > 0 ? `after ₹${activeRec.transportCost}/q transport (${activeRec.distanceKm} km)` : 'with no transport cost (local mandi)'}
+              </p>
             </div>
 
             {/* ROW 6: COUPLING ACTION RELAY DISPATCH COMMAND BUTTONS GROUP */}
             <div className="flex flex-col gap-2 mt-2">
               <button
-                onClick={() => navigate('/sms-relay')}
+                onClick={handleNotifyFarmers}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#2D6A4F] text-sm font-semibold text-white transition hover:bg-[#1B4D37]"
               >
                 <MessageSquare size={16} />
@@ -256,8 +214,8 @@ export default function HarvestAdvisor() {
           <div>
             <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4">
               <div>
-                <h3 className="text-[16px] font-bold text-[#1B1B1B]">Price outlook — {selectedCrop}</h3>
-                <p className="text-xs font-semibold text-gray-400 mt-0.5">Kolar Zone · Karnataka</p>
+                <h3 className="text-[16px] font-bold text-[#1B1B1B]">Price outlook — {activeCrop}</h3>
+                <p className="text-xs font-semibold text-gray-400 mt-0.5">{zone} Zone · Karnataka</p>
               </div>
               
               {/* Manual Chart Key pills indicators layer component view map */}
@@ -282,14 +240,14 @@ export default function HarvestAdvisor() {
                   
                   {/* Reference indicator layer splitting line */}
                   <ReferenceLine 
-                    x="W8" 
+                    x={todayWeek}
                     stroke="#E5E7EB" 
                     strokeDasharray="3 3" 
                     label={{ value: 'Today', position: 'insideTopRight', fill: '#9CA3AF', fontSize: 11, fontWeight: 600 }} 
                   />
                   
                   {/* Confidence boundaries area interval blocks layer */}
-                  <Area dataKey="max" dataKeyMin="min" stroke="none" fill="#F4A261" opacity={0.15} />
+                  <Area dataKey={forecastRange} stroke="none" fill="#F4A261" opacity={0.15} />
                   
                   {/* Actual lines plots layer structure parameters maps hooks */}
                   <Line type="monotone" dataKey="actual" stroke="#2D6A4F" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
@@ -302,15 +260,11 @@ export default function HarvestAdvisor() {
 
             {/* THREE COLUMN GREEN HORIZONTAL INSIGHT PILLS PANEL ROW */}
             <div className="grid grid-cols-3 gap-3 mt-4">
-              <div className="bg-[#F0FDF4] border border-[#BBF7D0] text-[#15803D] rounded-lg py-2.5 text-center text-xs font-bold font-sans">
-                Peak in 3 weeks
-              </div>
-              <div className="bg-[#F0FDF4] border border-[#BBF7D0] text-[#15803D] rounded-lg py-2.5 text-center text-xs font-bold font-sans">
-                Supply -34% nearby
-              </div>
-              <div className="bg-[#F0FDF4] border border-[#BBF7D0] text-[#15803D] rounded-lg py-2.5 text-center text-xs font-bold font-sans">
-                Recommend: harvest early
-              </div>
+              {activeRec.insights.map((insight) => (
+                <div key={insight} className="bg-[#F0FDF4] border border-[#BBF7D0] text-[#15803D] rounded-lg py-2.5 text-center text-xs font-bold font-sans">
+                  {insight}
+                </div>
+              ))}
             </div>
           </div>
 

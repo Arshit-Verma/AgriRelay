@@ -3,9 +3,8 @@ import { Lock, MapPin, User, Sprout, MessageSquare, ArrowRight } from 'lucide-re
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { apiPost } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-
-const demoZones = ['Kolar', 'Tumkur', 'Hassan', 'Mandya'];
 
 export default function Login() {
   const { officer, login } = useAuth();
@@ -13,7 +12,6 @@ export default function Login() {
   const [form, setForm] = useState({
     officerId: '',
     password: '',
-    zone: '',
   });
 
   if (officer) {
@@ -27,47 +25,22 @@ export default function Login() {
   const handleSubmit = (event) => {
     event.preventDefault();
 
-    if (!form.officerId.trim() || !form.password.trim() || !form.zone) {
-      toast.error('Enter Officer ID, password, and zone to sign in.');
+    if (!form.officerId.trim() || !form.password) {
+      toast.error('Enter your Officer ID and password to sign in.');
       return;
     }
 
-    // --- ADD THIS HACKATHON BYPASS BLOCK ---
-    if (form.officerId === 'admin' && form.password === 'admin') {
-      toast.success('Bypassing to Dashboard (Mock Login)');
-      login({
-        token: "mock-jwt-token",
-        name: "Test Officer",
-        officerId: form.officerId.trim(),
-        zone: form.zone
-      });
-      navigate('/dashboard');
-      return; 
-    }
-    // ---------------------------------------
-
-    fetch('http://localhost:5000/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        officerId: form.officerId.trim(),
-        zone: form.zone
-      })
+    apiPost('/api/auth/login', {
+      officerId: form.officerId.trim(),
+      password: form.password,
     })
-      .then((res) => {
-        if (!res.ok) throw new Error('Authentication failed');
-        return res.json();
-      })
-      .then((data) => {
-        login({
-          ...data,
-          officerId: form.officerId.trim(),
-        });
+      .then(({ token, officer: signedInOfficer }) => {
+        login({ ...signedInOfficer, token });
         navigate('/dashboard');
       })
       .catch((err) => {
         console.error(err);
-        toast.error('Sign in failed. Check your ID/Zone credentials or server status.');
+        toast.error(err.status === 401 ? 'Incorrect Officer ID or password.' : 'Could not reach the server. Check your connection and try again.');
       });
   };
 
@@ -104,7 +77,7 @@ export default function Login() {
               ₹92,651 crore in annual crop loss.
             </p>
             <p className="font-normal text-white font-sans" style={{ marginTop: '10px', opacity: 0.6, fontSize: '14px' }}>
-              We're fixing the relay.
+              We&apos;re fixing the relay.
             </p>
           </div>
         </div>
@@ -154,8 +127,8 @@ export default function Login() {
                     type="text"
                     value={form.officerId}
                     onChange={updateField('officerId')}
-                    placeholder="e.g. KA-2024-0312"
-                    className="h-[44px] w-full bg-white rounded-[8px] border-1.5 border-[#E5E7EB] pl-10 pr-3 text-[15px] font-normal text-[#1B1B1B] outline-none transition duration-150 ease-in-out placeholder:text-[#9CA3AF]/70 focus:border-[#2D6A4F] focus:ring-3 focus:ring-[#2D6A4F]/12 font-sans"
+                    placeholder="e.g. officer-004"
+                    className="h-[44px] w-full bg-white rounded-[8px] border-[1.5px] border-[#E5E7EB] pl-10 pr-3 text-[15px] font-normal text-[#1B1B1B] outline-none transition duration-150 ease-in-out placeholder:text-[#9CA3AF]/70 focus:border-[#2D6A4F] focus:ring-[3px] focus:ring-[#2D6A4F]/[0.12] font-sans"
                   />
                 </div>
               </label>
@@ -173,36 +146,8 @@ export default function Login() {
                     type="password"
                     value={form.password}
                     onChange={updateField('password')}
-                    className="h-[44px] w-full bg-white rounded-[8px] border-1.5 border-[#E5E7EB] pl-10 pr-3 text-[15px] font-normal text-[#1B1B1B] outline-none transition duration-150 ease-in-out focus:border-[#2D6A4F] focus:ring-3 focus:ring-[#2D6A4F]/12 font-sans"
+                    className="h-[44px] w-full bg-white rounded-[8px] border-[1.5px] border-[#E5E7EB] pl-10 pr-3 text-[15px] font-normal text-[#1B1B1B] outline-none transition duration-150 ease-in-out focus:border-[#2D6A4F] focus:ring-[3px] focus:ring-[#2D6A4F]/[0.12] font-sans"
                   />
-                </div>
-              </label>
-
-              <label className="block">
-                <span 
-                  className="block font-sans"
-                  style={{ fontStyle: 'normal', fontWeight: 600, fontSize: '11px', color: '#6B7280', uppercase: 'true', letterSpacing: '0.08em', marginBottom: '6px' }}
-                >
-                  ZONE
-                </span>
-                <div className="relative">
-                  <MapPin className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]" size={16} aria-hidden="true" />
-                  <select
-                    value={form.zone}
-                    onChange={updateField('zone')}
-                    style={{
-                      borderColor: form.zone ? '#2D6A4F' : '#E5E7EB'
-                    }}
-                    className="h-[44px] w-full appearance-none bg-white rounded-[8px] border-1.5 pl-10 pr-8 text-[15px] font-normal text-[#1B1B1B] outline-none transition duration-150 ease-in-out focus:border-[#2D6A4F] focus:ring-3 focus:ring-[#2D6A4F]/12 font-sans"
-                  >
-                    <option value="">Select assigned zone</option>
-                    {demoZones.map((zone) => (
-                      <option key={zone} value={zone}>
-                        {zone}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-[#9CA3AF]" />
                 </div>
               </label>
             </div>

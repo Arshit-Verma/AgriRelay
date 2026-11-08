@@ -1,35 +1,35 @@
 import React, { useState, useEffect } from "react";
 import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap } from 'react-leaflet';
-import { AlertTriangle, Plus, ShieldCheck, MapPin } from 'lucide-react';
+import { AlertTriangle, Plus, MapPin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import 'leaflet/dist/leaflet.css';
+import { postOrQueue } from '../api/outbox';
+import { useAuth } from '../context/AuthContext';
+import { useZone } from '../context/ZoneContext';
 
-// --- HARDCODED DEMO DATA ---
-const INITIAL_FLAGS = [
-  { id: 'c-001', crop: 'Tomato', location: 'Mulbagal Cluster', lat: 13.1642, lng: 78.3946, severity: 'high', date: '2026-06-12', batchId: 'KLR-TOM-260612-A' },
-  { id: 'c-002', crop: 'Tomato', location: 'Kolar Gold Fields Yard', lat: 12.9592, lng: 78.2719, severity: 'medium', date: '2026-06-13', batchId: 'KLR-TOM-260613-B' },
-  { id: 'c-003', crop: 'Onion', location: 'Srinivaspur Storage', lat: 13.3378, lng: 78.2146, severity: 'low', date: '2026-06-14', batchId: 'KLR-ONI-260614-C' }
-];
-
-const CROPS = ['Tomato', 'Onion', 'Maize'];
 const severityTone = { low: '#2D6A4F', medium: '#F4A261', high: '#E63946' };
 
 // Map camera fly controller engine hook helper
 function MapFlyController({ center }) {
   const map = useMap();
-  if (center) {
-    map.setView(center, 10);
-  }
+
+  useEffect(() => {
+    if (center) {
+      map.setView(center, 10);
+    }
+  }, [map, center]);
+
   return null;
 }
 
 export default function ContaminationFlag() {
-  const [flags, setFlags] = useState(INITIAL_FLAGS);
-  const [mapCenter, setMapCenter] = useState([13.1369, 78.1294]); // Kolar Center
+  const { officer } = useAuth();
+  const { zone, zoneCode, center, cropsManaged, contaminationFlags: flags, addContaminationFlag, refreshQueuedFlags } = useZone();
+  const [mapCenter, setMapCenter] = useState(center);
 
   // Form State Configurations
   const [form, setForm] = useState({
-    crop: 'Tomato',
+    crop: cropsManaged[0],
     location: '',
     severity: 'medium',
     batchId: ''
@@ -42,12 +42,12 @@ export default function ContaminationFlag() {
       setForm(prev => ({
         ...prev,
         location: `${prefilledMandi} Intake Yard`,
-        batchId: `KLR-${prev.crop.slice(0,3).toUpperCase()}-${new Date().toISOString().slice(2,10).replace(/-/g,'')}-NEW`
+        batchId: `${zoneCode}-${prev.crop.slice(0,3).toUpperCase()}-${new Date().toISOString().slice(2,10).replace(/-/g,'')}-NEW`
       }));
       sessionStorage.removeItem("prefilledMandi");
       toast.success(`Pre-filled location from ${prefilledMandi}`);
     }
-  }, []);
+  }, [zoneCode]);
 
   const handleInputChange = (field) => (e) => {
     setForm(prev => ({ ...prev, [field]: e.target.value }));
@@ -60,25 +60,33 @@ export default function ContaminationFlag() {
       return;
     }
 
-    // Generate simulated nearby offset coordinate around Kolar for demo rendering mapping
-    const offsetLat = 13.1369 + (Math.random() - 0.5) * 0.3;
-    const offsetLng = 78.1294 + (Math.random() - 0.5) * 0.3;
+    // Generate simulated nearby offset coordinate around the zone for demo rendering mapping
+    const offsetLat = center[0] + (Math.random() - 0.5) * 0.3;
+    const offsetLng = center[1] + (Math.random() - 0.5) * 0.3;
 
-    const newFlag = {
-      id: `c-00${flags.length + 1}`,
+    postOrQueue('/api/contamination-flags', {
       crop: form.crop,
-      location: form.location,
+      location: form.location.trim(),
       severity: form.severity,
-      date: new Date().toISOString().split('T')[0],
       batchId: form.batchId.toUpperCase().trim(),
       lat: offsetLat,
       lng: offsetLng
-    };
-
-    setFlags([newFlag, ...flags]);
-    setMapCenter([offsetLat, offsetLng]);
-    setForm({ crop: 'Tomato', location: '', severity: 'medium', batchId: '' });
-    toast.success("Contamination audit trail record logged locally.");
+    }, officer.id)
+      .then(({ saved, result }) => {
+        if (saved) {
+          addContaminationFlag(result);
+          toast.success("Contamination flag saved to the audit trail.");
+        } else {
+          refreshQueuedFlags();
+          toast.success("You're offline. The flag will sync when you reconnect.");
+        }
+        setMapCenter([offsetLat, offsetLng]);
+        setForm({ crop: cropsManaged[0], location: '', severity: 'medium', batchId: '' });
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error(err.status === 409 ? "That Batch ID has already been flagged." : "Could not save the flag. Check the server and try again.");
+      });
   };
 
   return (
@@ -86,7 +94,7 @@ export default function ContaminationFlag() {
       
       {/* HEADER SECTION PANEL TIER */}
       <div className="flex flex-col gap-1 border-b border-black/10 bg-[#F8F9F2] pb-4 shrink-0">
-        <h1 className="text-[22px] font-bold text-[#1B1B1B]">Flag Contamination — Kolar Zone</h1>
+        <h1 className="text-[22px] font-bold text-[#1B1B1B]">Flag Contamination — {zone} Zone</h1>
         <p className="text-xs font-semibold text-gray-400">Trace and flag toxic batches or biological containment leaks before shipping</p>
       </div>
 
@@ -96,7 +104,7 @@ export default function ContaminationFlag() {
         {/* LEFT COLUMN: THE GEOSPATIAL MAP TRAIL AUDIT */}
         <div className="bg-white border border-black/10 rounded-xl p-5 shadow-sm flex flex-col justify-between h-full overflow-hidden">
           <div className="mb-4">
-            <h2 className="text-md font-bold text-[#1B1B1B]">Contamination Audit Trail</h2>
+            <h2 className="text-base font-bold text-[#1B1B1B]">Contamination Audit Trail</h2>
             <p className="text-xs font-semibold text-gray-400 mt-0.5">Active quarantine perimeters tracking locked bio-batches</p>
           </div>
 
@@ -144,7 +152,7 @@ export default function ContaminationFlag() {
                     onChange={handleInputChange('crop')}
                     className="h-9 w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 text-xs font-medium outline-none focus:border-[#2D6A4F]"
                   >
-                    {CROPS.map(c => <option key={c} value={c}>{c}</option>)}
+                    {cropsManaged.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </label>
 
@@ -169,7 +177,7 @@ export default function ContaminationFlag() {
                   type="text"
                   value={form.batchId}
                   onChange={handleInputChange('batchId')}
-                  placeholder="e.g. KLR-TOM-260614-X"
+                  placeholder={`e.g. ${zoneCode}-${cropsManaged[0].slice(0, 3).toUpperCase()}-260614-X`}
                   className="h-9 w-full bg-gray-50 border border-gray-200 rounded-lg px-3 text-xs font-mono uppercase outline-none focus:border-[#2D6A4F]"
                 />
               </label>
@@ -180,7 +188,7 @@ export default function ContaminationFlag() {
                   type="text"
                   value={form.location}
                   onChange={handleInputChange('location')}
-                  placeholder="e.g. Bangarpet Weighing Station"
+                  placeholder="e.g. Main Weighing Station"
                   className="h-9 w-full bg-gray-50 border border-gray-200 rounded-lg px-3 text-xs outline-none focus:border-[#2D6A4F]"
                 />
               </label>
@@ -209,7 +217,7 @@ export default function ContaminationFlag() {
                 <div 
                   key={flag.id} 
                   onClick={() => setMapCenter([flag.lat, flag.lng])}
-                  className="border border-[#E5E7EB] bg-white rounded-xl p-3 shadow-xs hover:border-gray-400 cursor-pointer transition duration-150 relative group"
+                  className="border border-[#E5E7EB] bg-white rounded-xl p-3 shadow-sm hover:border-gray-400 cursor-pointer transition duration-150 relative group"
                 >
                   <div className="flex items-center justify-between">
                     <p className="font-mono text-xs font-bold text-gray-900 tracking-wide">{flag.batchId}</p>
@@ -229,7 +237,7 @@ export default function ContaminationFlag() {
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-gray-400 mt-3 pt-2 border-t border-gray-50 font-medium">
-                    <span>Intercepted: {flag.date}</span>
+                    <span>Intercepted: {flag.date}{flag.pending ? ' · Waiting to sync' : ''}</span>
                     <span className="text-gray-300 group-hover:text-gray-500 transition text-[10px] font-bold">Center Map ↗</span>
                   </div>
                 </div>
